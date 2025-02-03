@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/codecommit"
@@ -37,6 +38,7 @@ func CodecommitClient() Codecommit {
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		log.Fatalf("Unable to load AWS SDK config, %v", err)
+		os.Exit(1)
 	}
 
 	csc := codecommit.NewFromConfig(cfg)
