@@ -2,7 +2,6 @@
 
 Aggregating AWS Codecommit commits and creating a graph like GitHub graph.
 
-
-## Dev 
+## Dev
 
 Do whatever you like
