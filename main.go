@@ -6,6 +6,7 @@ import (
 	"main/logger"
 	"os"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	aws_config "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/codecommit"
 	"github.com/aws/aws-sdk-go-v2/service/codecommit/types"
@@ -29,14 +30,25 @@ func main() {
 		}
 
 		for _, branch := range branches {
-			commits, err := cc.GetCommitsNumberOnBranch(*repo.RepositoryName, branch, logger)
-			if err != nil {
-				logger.Error("Failed to retrieve commits for repository %s - Branch %v: %v", *repo.RepositoryName, branch, err)
-				continue
-			}
-
-			fmt.Println(*repo.RepositoryName, commits)
+			fmt.Println(branch)
 		}
+	}
+
+	repoName := "your-repository-name"
+	branchName := "your-branch-name"
+
+	commits, err := cc.GetCommitsOnBranch(repoName, branchName)
+	if err != nil {
+		fmt.Printf("Error getting commits: %v\n", err)
+		return
+	}
+
+	for _, commit := range commits {
+		fmt.Printf("Commit: %s\n", commit.CommitID)
+		fmt.Printf("Author: %s\n", commit.Author)
+		fmt.Printf("Date: %s\n", commit.Date)
+		fmt.Printf("Message: %s\n", commit.Message)
+		fmt.Printf("Tags: %v\n\n", commit.Tags)
 	}
 }
 
@@ -86,114 +98,69 @@ func (c *Codecommit) GetBranches(repo string, logger *logger.Logger) ([]string, 
 	return branches.Branches, nil
 }
 
-func (c *Codecommit) GetCommitsNumberOnBranch(repo string, branch string, logger *logger.Logger) (*string, error) {
-	logger.Info("Retrieving commit ID for repo: %s, branch: %s", repo, branch)
-	commit, err := c.client.GetBranch(context.TODO(), &codecommit.GetBranchInput{
-		RepositoryName: &repo,
-		BranchName:     &branch,
+type CommitInfo struct {
+	CommitID string
+	Author   string
+	Date     string
+	Message  string
+	Tags     []string
+}
+
+// getCommitsOnBranch retrieves the commit history for the specified branch.
+func (c *Codecommit) GetCommitsOnBranch(repoName, branchName string) ([]CommitInfo, error) {
+	branchOutput, err := c.client.GetBranch(context.TODO(), &codecommit.GetBranchInput{
+		RepositoryName: aws.String(repoName),
+		BranchName:     aws.String(branchName),
 	})
 
 	if err != nil {
-		logger.Error("Failed to get branch information for repo: %s, branch: %s - %v", repo, branch, err)
-		return nil, err
+		return nil, fmt.Errorf("failed to get branch info: %w", err)
 	}
 
-	logger.Info("Successfully retrieved commit ID for repo: %s, branch: %s", repo, branch)
-	return commit.Branch.CommitId, nil
+	headCommitID := branchOutput.Branch.CommitId
+	if headCommitID == nil {
+		return nil, fmt.Errorf("branch %s has no commit", branchName)
+	}
+
+	// Traverse commit history starting from the HEAD.
+	var allCommits []types.Commit
+	currentCommitID := headCommitID
+
+	for currentCommitID != nil {
+		commitOutput, err := c.client.GetCommit(context.TODO(), &codecommit.GetCommitInput{
+			CommitId:       currentCommitID,
+			RepositoryName: aws.String(repoName),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get commit %s: %w", aws.ToString(currentCommitID), err)
+		}
+
+		commit := commitOutput.Commit
+		allCommits = append(allCommits, *commit)
+
+		if len(commit.Parents) > 0 {
+			currentCommitID = aws.String(commit.Parents[0])
+		} else {
+			currentCommitID = nil
+		}
+	}
+
+	// Map commits to CommitInfo, including associated tags.
+	var commitInfos []CommitInfo
+	for _, commit := range allCommits {
+		info := CommitInfo{
+			CommitID: aws.ToString(commit.CommitId),
+			Message:  aws.ToString(commit.Message),
+			Tags:     []string{},
+		}
+
+		if commit.Author != nil {
+			info.Author = aws.ToString(commit.Author.Name)
+			info.Date = aws.ToString(commit.Author.Date)
+		}
+
+		commitInfos = append(commitInfos, info)
+	}
+
+	return commitInfos, nil
 }
-
-// func GetBranchNumberOfCommits(branchName string, repoName string, c *codecommit.Client) int {
-// 	branch, err := c.GetBranch(context.TO(), &codecommit.GetBranchInput{
-// 		RepositoryName: &repoName,
-// 		BranchName:     &branchName,
-// 	})
-// 	if err != nil {
-// 		log.Fatalf("Unable to get branch information, %v", err)
-// 	}
-
-// 	commitCount := 0
-// 	commitID := branch.Branch.CommitId
-
-// 	for commitID != nil {
-// 		commitCount++
-// 		commit, err := getCommitWithRetry(c, repoName, *commitID)
-// 		if err != nil {
-// 			log.Fatalf("Unable to get commit information, %v", err)
-// 		}
-
-// 		if len(commit.Commit.Parents) > 0 {
-// 			commitID = &commit.Commit.Parents[0]
-// 		} else {
-// 			commitID = nil
-// 		}
-// 	}
-
-// 	return commitCount
-// }
-
-// func getCommitWithRetry(c *codecommit.Client, repoName string, commitID string) (*codecommit.GetCommitOutput, error) {
-// 	var commit *codecommit.GetCommitOutput
-// 	var err error
-// 	maxRetries := 5
-// 	for i := 0; i < maxRetries; i++ {
-// 		commit, err = c.GetCommit(context.TO(), &codecommit.GetCommitInput{
-// 			RepositoryName: &repoName,
-// 			CommitId:       &commitID,
-// 		})
-// 		if err == nil {
-// 			return commit, nil
-// 		}
-
-// 		if awsErr, ok := err(aws); ok && awsErr.ErrorCode() == "ThrottlingException" {
-// 			time.Sleep(time.Duration(2^i) * time.Second)
-// 		} else {
-// 			return nil, err
-// 		}
-// 	}
-// 	return nil, err
-// }
-
-// func something() {
-// 	// Initialize a session that the SDK uses to load credentials from the shared credentials file ~/.aws/credentials
-// 	cfg, err := config.LoadDefaultConfig(context.TO())
-// 	if err != nil {
-// 		log.Fatalf("Unable to load AWS SDK config, %v", err)
-// 	}
-
-// 	// Create CodeCommit service client
-// 	csc := codecommit.NewFromConfig(cfg)
-
-// 	repos, err := csc.ListRepositories(context.TO(), &codecommit.ListRepositoriesInput{})
-// 	if err != nil {
-// 		log.Fatalf("Unable to list repositories, %v", err)
-// 	}
-
-// 	for _, repo := range repos.Repositories {
-// 		branches := GetRepoBranches(*repo.RepositoryName, csc)
-// 		for _, branch := range branches {
-// 			fmt.Println(GetBranchNumberOfCommits(branch, *repo.RepositoryName, csc))
-// 		}
-// 	}
-
-// 	// // List commits
-// 	// input := &codecommit.ListR{
-// 	// 	RepositoryName: aws.String(repoName),
-// 	// }
-
-// 	// result, err := cvc.ListCommits(input)
-// 	// if err != nil {
-// 	// 	log.Fatalf("Unable to list commits, %v", err)
-// 	// }
-
-// 	// // Aggregate commit counts by author
-// 	// commitCounts := make(map[string]int)
-// 	// for _, commit := range result.Commits {
-// 	// 	author := *commit.Author.Name
-// 	// 	commitCounts[author]++
-// 	// }
-
-// 	// // Print commit counts
-// 	// for author, count := range commitCounts {
-// 	// 	fmt.Printf("Author: %s, Commits: %d\n", author, count)
-// 	// }
-// }
