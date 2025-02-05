@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"main/logger"
 	"os"
 
@@ -17,17 +17,25 @@ func main() {
 
 	repos, err := cc.GetRepos(logger)
 	if err != nil {
-		log.Fatalf("Unable to list repositories, %v", err)
+		logger.Error("Failed to retrieve repositories: %v", err)
+		return
 	}
 
 	for _, repo := range repos {
 		branches, err := cc.GetBranches(*repo.RepositoryName, logger)
 		if err != nil {
-			log.Fatalf("Unable to list branches, %v", err)
+			logger.Error("Failed to retrieve branches for repository %s: %v", *repo.RepositoryName, err)
+			continue
 		}
 
 		for _, branch := range branches {
-			log.Println(branch)
+			commits, err := cc.GetCommitsNumberOnBranch(*repo.RepositoryName, branch, logger)
+			if err != nil {
+				logger.Error("Failed to retrieve commits for repository %s - Branch %v: %v", *repo.RepositoryName, branch, err)
+				continue
+			}
+
+			fmt.Println(*repo.RepositoryName, commits)
 		}
 	}
 }
@@ -37,60 +45,60 @@ type Codecommit struct {
 }
 
 func CodecommitClient(logger *logger.Logger) Codecommit {
-	logger.Info("Get AWS config")
+	logger.Info("Initializing AWS CodeCommit client")
 	cfg, err := aws_config.LoadDefaultConfig(context.TODO())
 
 	if err != nil {
-		logger.Error("Unable to load SDK config, %v", err)
+		logger.Error("Failed to load AWS SDK config: %v", err)
 		os.Exit(1)
 	}
 
 	csc := codecommit.NewFromConfig(cfg)
+	logger.Info("AWS CodeCommit client initialized successfully")
 	return Codecommit{client: csc}
 }
 
 func (c *Codecommit) GetRepos(logger *logger.Logger) ([]types.RepositoryNameIdPair, error) {
-
-	logger.Info("Get list of repos")
+	logger.Info("Fetching list of repositories")
 	repos, err := c.client.ListRepositories(context.TODO(), &codecommit.ListRepositoriesInput{})
 
 	if err != nil {
-		logger.Error("Unable to list repositories, %v", err)
+		logger.Error("Failed to list repositories: %v", err)
 		return nil, err
 	}
 
-	logger.Info("Got list of repos")
+	logger.Info("Successfully retrieved %d repositories", len(repos.Repositories))
 	return repos.Repositories, nil
 }
 
 func (c *Codecommit) GetBranches(repo string, logger *logger.Logger) ([]string, error) {
-	logger.Info("Get list of branches for repo: %v", repo)
+	logger.Info("Fetching branches for repository: %s", repo)
 	branches, err := c.client.ListBranches(context.TODO(), &codecommit.ListBranchesInput{
 		RepositoryName: &repo,
 	})
 
 	if err != nil {
-		logger.Error("Unable to list branches, %v", err)
+		logger.Error("Failed to list branches for repository %s: %v", repo, err)
 		return nil, err
 	}
 
-	logger.Info("Got list of branches for repo: %v", repo)
+	logger.Info("Successfully retrieved %d branches for repository: %s", len(branches.Branches), repo)
 	return branches.Branches, nil
 }
 
-func (c *Codecommit) GetBranchCommitsNumber(repo string, branch string, logger *logger.Logger) (*string, error) {
-	logger.Info("Get branch commits number for repo: %v and branch: %v", repo, branch)
+func (c *Codecommit) GetCommitsNumberOnBranch(repo string, branch string, logger *logger.Logger) (*string, error) {
+	logger.Info("Retrieving commit ID for repo: %s, branch: %s", repo, branch)
 	commit, err := c.client.GetBranch(context.TODO(), &codecommit.GetBranchInput{
 		RepositoryName: &repo,
 		BranchName:     &branch,
 	})
 
 	if err != nil {
-		logger.Error("Unable to get branch information, %v", err)
+		logger.Error("Failed to get branch information for repo: %s, branch: %s - %v", repo, branch, err)
 		return nil, err
 	}
 
-	logger.Info("Got branch commits number for repo: %v and branch: %v", repo, branch)
+	logger.Info("Successfully retrieved commit ID for repo: %s, branch: %s", repo, branch)
 	return commit.Branch.CommitId, nil
 }
 
