@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"main/logger"
 	"os"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	aws_config "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/codecommit"
 	"github.com/aws/aws-sdk-go-v2/service/codecommit/types"
+	"github.com/aws/smithy-go"
 )
 
 func main() {
@@ -22,6 +25,23 @@ func main() {
 		return
 	}
 
+	// if len(repos) > 0 {
+	// 	repo := repos[2]
+	// 	branches, err := cc.GetBranches(*repo.RepositoryName, logger)
+	// 	if err != nil {
+	// 		logger.Error("Failed to retrieve branches for repository %s: %v", *repo.RepositoryName, err)
+	// 	}
+
+	// 	branch := branches[0]
+	// 	commits, err := cc.GetCommitsOnBranch(*repo.RepositoryName, branch)
+	// 	if err != nil {
+	// 		fmt.Printf("Error getting commits: %v\n", err)
+	// 		return
+	// 	}
+
+	// 	fmt.Println("Length of commits", len(commits))
+	// }
+
 	for _, repo := range repos {
 		branches, err := cc.GetBranches(*repo.RepositoryName, logger)
 		if err != nil {
@@ -30,26 +50,16 @@ func main() {
 		}
 
 		for _, branch := range branches {
-			fmt.Println(branch)
+			commits, err := cc.GetCommitsOnBranch(*repo.RepositoryName, branch)
+			if err != nil {
+				fmt.Printf("Error getting commits: %v\n", err)
+				return
+			}
+
+			fmt.Println("Length of commits", len(commits))
 		}
 	}
 
-	repoName := "your-repository-name"
-	branchName := "your-branch-name"
-
-	commits, err := cc.GetCommitsOnBranch(repoName, branchName)
-	if err != nil {
-		fmt.Printf("Error getting commits: %v\n", err)
-		return
-	}
-
-	for _, commit := range commits {
-		fmt.Printf("Commit: %s\n", commit.CommitID)
-		fmt.Printf("Author: %s\n", commit.Author)
-		fmt.Printf("Date: %s\n", commit.Date)
-		fmt.Printf("Message: %s\n", commit.Message)
-		fmt.Printf("Tags: %v\n\n", commit.Tags)
-	}
 }
 
 type Codecommit struct {
@@ -106,7 +116,6 @@ type CommitInfo struct {
 	Tags     []string
 }
 
-// getCommitsOnBranch retrieves the commit history for the specified branch.
 func (c *Codecommit) GetCommitsOnBranch(repoName, branchName string) ([]CommitInfo, error) {
 	branchOutput, err := c.client.GetBranch(context.TODO(), &codecommit.GetBranchInput{
 		RepositoryName: aws.String(repoName),
@@ -127,17 +136,38 @@ func (c *Codecommit) GetCommitsOnBranch(repoName, branchName string) ([]CommitIn
 	currentCommitID := headCommitID
 
 	for currentCommitID != nil {
-		commitOutput, err := c.client.GetCommit(context.TODO(), &codecommit.GetCommitInput{
-			CommitId:       currentCommitID,
-			RepositoryName: aws.String(repoName),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to get commit %s: %w", aws.ToString(currentCommitID), err)
+		var commitOutput *codecommit.GetCommitOutput
+		maxRetries := 3
+		var lastErr error
+
+		// Retry loop for handling throttling errors.
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			commitOutput, err = c.client.GetCommit(context.TODO(), &codecommit.GetCommitInput{
+				CommitId:       currentCommitID,
+				RepositoryName: aws.String(repoName),
+			})
+			if err != nil {
+				var apiErr smithy.APIError
+				// Check if the error is a throttling exception.
+				if errors.As(err, &apiErr) && apiErr.ErrorCode() == "ThrottlingException" {
+					// Exponential backoff.
+					time.Sleep(time.Duration((attempt+1)*200) * time.Millisecond)
+					lastErr = err
+					continue
+				}
+				return nil, fmt.Errorf("failed to get commit %s: %w", aws.ToString(currentCommitID), err)
+			}
+			lastErr = nil
+			break
+		}
+		if lastErr != nil {
+			return nil, fmt.Errorf("failed to get commit %s after retries: %w", aws.ToString(currentCommitID), lastErr)
 		}
 
 		commit := commitOutput.Commit
 		allCommits = append(allCommits, *commit)
 
+		// Follow the first parent for linear history.
 		if len(commit.Parents) > 0 {
 			currentCommitID = aws.String(commit.Parents[0])
 		} else {
