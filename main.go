@@ -2,13 +2,13 @@ package main
 
 import (
 	"fmt"
-	c "main/codecommit"
+	"main/codecommit"
 	"main/logger"
 )
 
 func main() {
 	logger := logger.SetupLogger()
-	cc := c.CodecommitClient(logger)
+	cc := codecommit.NewClient(logger)
 
 	repos, err := cc.GetRepos(logger)
 	if err != nil {
@@ -24,7 +24,7 @@ func main() {
 		}
 
 		for _, branch := range branches {
-			commits, err := cc.GetCommitsOnBranch(*repo.RepositoryName, branch)
+			commits, err := cc.GetCommitsOnBranch(*repo.RepositoryName, &branch)
 			if err != nil {
 				fmt.Printf("Error getting commits: %v\n", err)
 				return

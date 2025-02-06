@@ -19,7 +19,7 @@ type Codecommit struct {
 	client *codecommit.Client
 }
 
-func CodecommitClient(logger *logger.Logger) Codecommit {
+func NewClient(logger *logger.Logger) Codecommit {
 	logger.Info("Initializing AWS CodeCommit client")
 	cfg, err := aws_config.LoadDefaultConfig(context.TODO())
 
@@ -46,9 +46,9 @@ func (c *Codecommit) GetRepos(logger *logger.Logger) ([]types.RepositoryNameIdPa
 	return repos.Repositories, nil
 }
 
-func (c *Codecommit) GetBranches(repo string, logger *logger.Logger) ([]string, error) {
+func (c *Codecommit) GetBranches(repo string, logger *logger.Logger) ([]codecommit.GetBranchOutput, error) {
 	logger.Info("Fetching branches for repository: %s", repo)
-	branches, err := c.client.ListBranches(context.TODO(), &codecommit.ListBranchesInput{
+	listBranchOutput, err := c.client.ListBranches(context.TODO(), &codecommit.ListBranchesInput{
 		RepositoryName: &repo,
 	})
 
@@ -57,8 +57,23 @@ func (c *Codecommit) GetBranches(repo string, logger *logger.Logger) ([]string, 
 		return nil, err
 	}
 
-	logger.Info("Successfully retrieved %d branches for repository: %s", len(branches.Branches), repo)
-	return branches.Branches, nil
+	var branches []codecommit.GetBranchOutput
+	for _, branchName := range listBranchOutput.Branches {
+		branchOutput, err := c.client.GetBranch(context.TODO(), &codecommit.GetBranchInput{
+			RepositoryName: aws.String(repo),
+			BranchName:     aws.String(branchName),
+		})
+
+		if err != nil {
+			logger.Error("Failed to get the branch with the name %v", branchName)
+			continue
+		}
+
+		branches = append(branches, *branchOutput)
+	}
+
+	logger.Info("Successfully retrieved %d branches for repository: %s", len(listBranchOutput.Branches), repo)
+	return branches, nil
 }
 
 type CommitInfo struct {
@@ -69,19 +84,10 @@ type CommitInfo struct {
 	Tags     []string
 }
 
-func (c *Codecommit) GetCommitsOnBranch(repoName, branchName string) ([]CommitInfo, error) {
-	branchOutput, err := c.client.GetBranch(context.TODO(), &codecommit.GetBranchInput{
-		RepositoryName: aws.String(repoName),
-		BranchName:     aws.String(branchName),
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get branch info: %w", err)
-	}
-
+func (c *Codecommit) GetCommitsOnBranch(repoName string, branchOutput *codecommit.GetBranchOutput) ([]CommitInfo, error) {
 	headCommitID := branchOutput.Branch.CommitId
 	if headCommitID == nil {
-		return nil, fmt.Errorf("branch %s has no commit", branchName)
+		return nil, fmt.Errorf("branch %s has no commits", *branchOutput.Branch.BranchName)
 	}
 
 	// Traverse commit history starting from the HEAD.
@@ -90,6 +96,7 @@ func (c *Codecommit) GetCommitsOnBranch(repoName, branchName string) ([]CommitIn
 
 	for currentCommitID != nil {
 		var commitOutput *codecommit.GetCommitOutput
+		var err error
 		maxRetries := 3
 		var lastErr error
 
